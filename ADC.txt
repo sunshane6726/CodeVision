@@ -1,0 +1,314 @@
+#include <avr/io.h>
+#include <avr/interrupt.h>
+
+#define LCD_RS_1 (PORTG |= 0X01)
+#define LCD_RS_0 (PORTG &= 0XFE)
+
+#define LCD_RW_1 (PORTG |= 0X02)
+#define LCD_RW_0 (PORTG &= 0XFD)
+
+#define EN_1 (PORTG |= 0X04) // 간단하게 확인하기 위해서 설정한다.
+#define EN_0 (PORTG &= 0XFB)
+#define WATCH_MODE 0
+#define W_MODIFY_MODE 1
+#define MIN_INC 0
+#define HOUR_INC 1
+
+unsigned char H10, H1, M10, M1, S10, S1;
+unsigned char sec = 0; min = 0; hour = 1;
+unsigned char SW1 = WATCH_MODE, SW2 = MIN_INC, SW3;
+unsigned int us_time = 1000;
+unsigned int ms_time = 1000;
+void E_Pulse();
+void us_delay(unsigned int us_time);
+void ms_delay(unsigned int ms_time);
+unsigned int ADdata;
+
+void us_delay(unsigned int us_time)
+{
+	unsigned int i;
+
+	for(i = 0; i < us_time; i++)
+	{
+		asm("PUSH R0");
+		asm("POP R0");
+		asm("PUSH R0");
+		asm("POP R0");
+		asm("PUSH R0");
+		asm("POP R0"); // 1us for 16MHz
+
+	}
+}
+
+void ms_delay(unsigned int ms_time)
+{
+	unsigned int i;
+
+	for(i = 0; i < ms_time; i++)
+		us_delay(1000);
+}
+
+void E_Pulse(void)
+{
+	EN_1;
+	us_delay(100);
+	EN_0;
+}
+
+void initLCD(void){
+
+	LCD_RS_0;
+	LCD_RW_0;
+	ms_delay(40);
+	PORTC = 0X38;
+	E_Pulse();
+	us_delay(40);
+	PORTC = 0X0C;
+	E_Pulse();
+
+	PORTC = 0X01;
+	ms_delay(2);
+	E_Pulse();
+
+	PORTC = 0X06;
+	E_Pulse();
+
+}
+
+void Write_Char(unsigned char buf)
+{
+	LCD_RS_1;
+	LCD_RW_0;
+	PORTC = buf;
+	E_Pulse();
+}
+
+void initPort()
+{
+	DDRC = 0XFF;
+	DDRG = 0XFF;
+	DDRD = 0X00;
+
+}
+
+void LCD_Disp(char x, char y)
+{
+	LCD_RS_0;
+	LCD_RW_0;
+
+	if(y==0)
+		PORTC = x + 0x80;
+	
+	else if(y==1)
+		PORTC = x + 0xc0;
+		E_Pulse();
+
+}
+
+void LCD_Write(char x, char y, char *str)
+{
+	LCD_Disp(x,y);
+	while(*str)
+	Write_Char(*str++);
+
+}
+
+void Clock()
+{
+
+	LCD_Write(0,0,"                      ");
+	LCD_Write(5,0, "CLOCK");
+
+	sec++;
+	if(SW1 == W_MODIFY_MODE) sec = 0;
+		if(sec > 59) {
+			
+			sec = 0;
+			min++;
+			if(min > 59) {
+			
+				hour++;
+				if(hour>12) 
+					hour = 1;
+			}
+		
+		}
+
+		H10 = hour/10;
+		H1 = hour%10;
+		M10 = min/10;
+		M1 = min%10;
+
+		S10 = sec/10;
+		S1 = sec%10;
+		LCD_Write(5,1,""                        );
+
+		LCD_Disp(4,1);
+		Write_Char(0x30 + H10);
+		Write_Char(0x30 + H1);
+
+		Write_Char(':');
+		Write_Char(0x30 + M10);
+		Write_Char(0x30 + M1);
+
+		Write_Char(':');
+
+		Write_Char(0x30 + S10);
+		Write_Char(0x30 + S1);
+
+
+}
+
+void ClockModifyCheck()
+{
+
+	if(!(PIND&0X01)) // SW1 누름을 체크
+	{
+		SW1++;
+		if(SW1==2)
+			SW1 = WATCH_MODE;
+	}
+
+ 	LCD_Write(0,0, "            ");
+	if(SW1 == WATCH_MODE) {
+		if(SW2 == HOUR_INC) 
+		LCD_Write(4,0,"HOUR INC");
+		
+		else 
+		LCD_Write(3,0,"MINUTE INC");
+	}
+
+	if(SW1 == W_MODIFY_MODE){
+	
+		if(!(PIND&0X02))
+		{
+			SW2++;
+			if(SW2 == 2)
+				SW2 = MIN_INC;
+		}
+
+		if(!(PIND&0X04)) {
+		
+		
+			if(SW2 == MIN_INC)
+			{
+				min++;
+				if(min > 59)
+				min = 0;
+			
+			
+			}
+			else if(SW2 == HOUR_INC){
+			
+				hour++;
+				if(hour > 12)
+				hour = 0;
+			
+			}
+
+
+		
+		
+		}
+	}
+}
+
+void initTimer()
+{
+
+ 	TIMSK3 = (1 << T0IE3); // TIMER3_0VF(0X01)
+	TCCR3A = 0X00;
+
+	TCCR3B = (1 << CS32); // Prescalar 256(0x04)
+	TCCR3C = 0X00;
+	TCNT3 = 3036; // 16,000,000/(1024 * 15,625) = 1
+}
+
+/*SIGNAL(TIMER3_OVF_vect)
+{
+	TCNT3 = 3036; // 16MHz/(256 * (65535-2026) = 1sec
+	sec++;
+	Clock();
+
+}
+*/
+void initADC()
+{
+	// ADMUX : RERS1/REF0/ADLAR/MUX4/MUX3/MUX3/MUX2/MUX1/MUX0
+
+	ADMUX = (1 << REFS1); // 기준전압 : 외부 커패시터를 가진 AVcc
+							// AD 변환 데이터 정렬 : 오른쪽 정렬
+	
+							//AD변환 채널 입력 : PORTF.0(ADC0)
+							//ADCSRA = ADED/ ADSC/ ADATE/ ADF/ ADIE / ADPS2 / ADPS1 / ADPS0
+
+	ADCSRA = ((1 << ADEN)|(1 << ADSC)|(1 << ADIE)); // ADC 인에이블 , ADC 변환 시작 , ADC인트럽트 인에이블
+	DDRF = 0XF0;
+	DIDR0 = 0X0F; // PORTE[3..0] 디지털 입력 불
+}
+
+SIGNAL(ADC_vect)
+{
+	ADdata = ADC;
+	ADCSRA |= (1 << ADSC); // AD 변환 시작
+
+}
+
+void ADC_LCD()
+{
+	unsigned int Buff,ADVoltage;
+
+	unsigned char AD1, AD_1, AD_2;
+
+		float temp;
+
+	temp = (float)ADdata * 500/1023;
+	ADVoltage = (int)temp;
+
+	AD1 = ADVoltage/100;
+	Buff = ADVoltage%100;
+
+	AD_1 = Buff/10;
+	AD_2 = Buff%10;
+
+	LCD_Write(0,0, "                     ");
+	LCD_Write(5,0, "ADC");
+	LCD_Write(1,1,"Vo:l");
+
+	Write_Char(AD1 + 0X30);
+	Write_Char('.');
+	Write_Char(AD_1 + 0X30);
+	Write_Char(AD_2 + 0X30);
+	Write_Char('V');
+
+}
+
+int main()
+
+{
+	initPort();
+	initLCD();
+	initTimer();
+	initADC();
+
+	sei();
+
+	while(1)
+	{
+		ms_delay(500);
+
+		ClockModifyCheck();
+		Clock();
+
+		ADC_LCD();
+	}
+
+	return 0;
+
+
+}
+	
+
+
+
+
